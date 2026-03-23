@@ -1,0 +1,278 @@
+<!-- ============================================================
+     META PIXEL + CONVERSIONS API TRACKING
+     For: Holly The Locator (hollythelocator.com)
+     
+     INSTRUCTIONS:
+     1. Copy this ENTIRE block of code
+     2. In Squarespace: Settings > Advanced > Code Injection > Header
+     3. Paste it BELOW any existing code (like schema markup)
+     4. Click Save
+     5. Update the SERVER_URL below to your deployed server URL
+     ============================================================ -->
+
+<!-- Meta Pixel Base Code -->
+<script>
+!function(f,b,e,v,n,t,s)
+{if(f.fbq)return;n=f.fbq=function(){n.callMethod?
+n.callMethod.apply(n,arguments):n.queue.push(arguments)};
+if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';
+n.queue=[];t=b.createElement(e);t.async=!0;
+t.src=v;s=b.getElementsByTagName(e)[0];
+s.parentNode.insertBefore(t,s)}(window, document,'script',
+'https://connect.facebook.net/en_US/fbevents.js');
+fbq('init', '1348226510464250');
+fbq('track', 'PageView');
+</script>
+<noscript><img height="1" width="1" style="display:none"
+src="https://www.facebook.com/tr?id=1348226510464250&ev=PageView&noscript=1"
+/></noscript>
+<!-- End Meta Pixel Base Code -->
+
+<!-- Holly's Custom Event Tracking (Conversions API + Pixel) -->
+<script>
+(function() {
+  'use strict';
+
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // ⚠️  IMPORTANT: Update this URL after deploying your server!
+  //     Example: 'https://your-app-name.railway.app'
+  //     or:      'https://your-app-name.onrender.com'
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  var SERVER_URL = 'https://YOUR-SERVER-URL-HERE.com';
+
+  var PIXEL_ID = '1348226510464250';
+
+  // ── Helper: Generate unique event ID for deduplication ─────
+  // Both the Pixel (client-side) and Conversions API (server-side)
+  // receive the same event_id so Meta knows it's ONE event, not two.
+  function generateEventId() {
+    return 'eid_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+  }
+
+  // ── Helper: Get Facebook cookies ───────────────────────────
+  // _fbp = Facebook Browser ID (set by pixel)
+  // _fbc = Facebook Click ID (set when user arrives via FB ad)
+  function getCookie(name) {
+    var match = document.cookie.match(new RegExp('(^| )' + name + '=([^;]+)'));
+    return match ? decodeURIComponent(match[2]) : null;
+  }
+
+  function getFbp() { return getCookie('_fbp'); }
+  function getFbc() {
+    // Check cookie first, then URL parameter
+    var fbc = getCookie('_fbc');
+    if (!fbc) {
+      var params = new URLSearchParams(window.location.search);
+      var fbclid = params.get('fbclid');
+      if (fbclid) {
+        fbc = 'fb.1.' + Date.now() + '.' + fbclid;
+      }
+    }
+    return fbc;
+  }
+
+  // ── Helper: Send event to BOTH Pixel and Conversions API ──
+  function trackEvent(eventName, customData, extraUserData) {
+    var eventId = generateEventId();
+    var eventTime = Math.floor(Date.now() / 1000);
+
+    // 1) Fire the client-side Pixel event
+    if (typeof fbq === 'function') {
+      fbq('track', eventName, customData || {}, { eventID: eventId });
+    }
+
+    // 2) Send to our proxy server → Meta Conversions API
+    var payload = {
+      event_name: eventName,
+      event_time: eventTime,
+      event_id: eventId,
+      event_source_url: window.location.href,
+      user_data: {
+        fbp: getFbp(),
+        fbc: getFbc(),
+        client_user_agent: navigator.userAgent
+        // client_ip_address is added by the server automatically
+      },
+      custom_data: customData || {}
+    };
+
+    // Merge any extra user data (e.g., hashed email from form)
+    if (extraUserData) {
+      for (var key in extraUserData) {
+        if (extraUserData.hasOwnProperty(key)) {
+          payload.user_data[key] = extraUserData[key];
+        }
+      }
+    }
+
+    // Send to server (fire-and-forget, don't block the page)
+    if (SERVER_URL && SERVER_URL.indexOf('YOUR-SERVER') === -1) {
+      fetch(SERVER_URL + '/api/track-event', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        keepalive: true  // ensures request completes even if page unloads
+      }).then(function(r) {
+        if (!r.ok) console.warn('[Holly Tracking] Server responded with', r.status);
+      }).catch(function(err) {
+        console.warn('[Holly Tracking] Could not reach server:', err.message);
+      });
+    } else {
+      console.warn('[Holly Tracking] SERVER_URL not configured! Only client-side pixel is firing.');
+    }
+
+    console.log('[Holly Tracking] ' + eventName + ' tracked (ID: ' + eventId + ')');
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // EVENT 1: ViewContent — fires on every page load
+  // ══════════════════════════════════════════════════════════════
+  trackEvent('ViewContent', {
+    content_name: document.title,
+    content_category: window.location.pathname
+  });
+
+  // ══════════════════════════════════════════════════════════════
+  // EVENT 2: Lead — apartment wishlist form submission
+  // This is the MOST IMPORTANT event for Holly's ad campaigns.
+  // ══════════════════════════════════════════════════════════════
+  var isWishlistPage = window.location.pathname.toLowerCase().indexOf('apartmentwishlist') !== -1;
+
+  if (isWishlistPage) {
+    console.log('[Holly Tracking] Wishlist page detected — form tracking active');
+
+    // Track when user starts interacting with the form (partial lead)
+    var formInteractionTracked = false;
+    var formSubmitted = false;
+
+    // Wait for the Squarespace form to load
+    function setupFormTracking() {
+      // Squarespace forms use various selectors; we try multiple
+      var forms = document.querySelectorAll(
+        'form[data-form-id], .form-wrapper form, .sqs-block-form form, form'
+      );
+
+      if (forms.length === 0) {
+        // Form might not be rendered yet; retry
+        setTimeout(setupFormTracking, 1000);
+        return;
+      }
+
+      forms.forEach(function(form) {
+        // ── Track form field interactions (partial submission) ──
+        var inputs = form.querySelectorAll('input, textarea, select');
+        inputs.forEach(function(input) {
+          input.addEventListener('focus', function() {
+            if (!formInteractionTracked) {
+              formInteractionTracked = true;
+              console.log('[Holly Tracking] Form interaction started');
+              // We don't fire the event yet — we wait to see
+              // if they abandon or submit
+            }
+          });
+        });
+
+        // ── Track form submission (full Lead event) ─────────────
+        form.addEventListener('submit', function() {
+          formSubmitted = true;
+          trackEvent('Lead', {
+            content_name: 'Apartment Wishlist Form',
+            content_category: 'Form Submission',
+            status: 'submitted'
+          });
+          console.log('[Holly Tracking] ✅ LEAD EVENT — Form submitted!');
+        });
+      });
+
+      // Also listen for Squarespace's AJAX form submission
+      // (Squarespace often submits forms via AJAX, not traditional submit)
+      var observer = new MutationObserver(function(mutations) {
+        mutations.forEach(function(mutation) {
+          mutation.addedNodes.forEach(function(node) {
+            if (node.nodeType === 1) {
+              // Check for success message after form submission
+              var isSuccess = (
+                node.classList && (
+                  node.classList.contains('form-submission-text') ||
+                  node.classList.contains('form-submission-html') ||
+                  node.classList.contains('sqs-system-text')
+                )
+              ) || (node.textContent && node.textContent.toLowerCase().indexOf('thank') !== -1);
+
+              if (isSuccess && !formSubmitted) {
+                formSubmitted = true;
+                trackEvent('Lead', {
+                  content_name: 'Apartment Wishlist Form',
+                  content_category: 'Form Submission',
+                  status: 'submitted'
+                });
+                console.log('[Holly Tracking] ✅ LEAD EVENT — Form submitted (detected via DOM)!');
+              }
+            }
+          });
+        });
+      });
+
+      observer.observe(document.body, { childList: true, subtree: true });
+    }
+
+    // Start watching for the form
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', setupFormTracking);
+    } else {
+      setupFormTracking();
+    }
+
+    // ── Track partial form submissions ──────────────────────────
+    // If user interacted with the form but didn't submit,
+    // fire a "partial lead" when they leave the page.
+    window.addEventListener('beforeunload', function() {
+      if (formInteractionTracked && !formSubmitted) {
+        trackEvent('Lead', {
+          content_name: 'Apartment Wishlist Form',
+          content_category: 'Partial Form Submission',
+          status: 'partial'
+        });
+        console.log('[Holly Tracking] ⚠️ PARTIAL LEAD — User left without submitting');
+      }
+    });
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  // EVENT 3: Contact — "Chat with Holly" button clicks
+  // ══════════════════════════════════════════════════════════════
+  function setupButtonTracking() {
+    // Find buttons/links containing "Chat with Holly" text
+    var allClickables = document.querySelectorAll('a, button, .sqs-block-button-element');
+
+    allClickables.forEach(function(el) {
+      var text = (el.textContent || el.innerText || '').trim().toLowerCase();
+      if (
+        text.indexOf('chat with holly') !== -1 ||
+        text.indexOf('book a call') !== -1 ||
+        text.indexOf('schedule') !== -1 ||
+        text.indexOf('contact') !== -1 ||
+        text.indexOf('get started') !== -1
+      ) {
+        el.addEventListener('click', function() {
+          trackEvent('Contact', {
+            content_name: el.textContent.trim(),
+            content_category: 'Button Click'
+          });
+          console.log('[Holly Tracking] 📞 CONTACT EVENT — "' + el.textContent.trim() + '" clicked');
+        });
+      }
+    });
+  }
+
+  // Run button tracking after page loads
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', setupButtonTracking);
+  } else {
+    // Small delay to let Squarespace render dynamic content
+    setTimeout(setupButtonTracking, 1500);
+  }
+
+})();
+</script>
+<!-- End Holly's Custom Event Tracking -->
